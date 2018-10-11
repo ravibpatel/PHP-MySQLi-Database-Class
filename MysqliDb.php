@@ -7,11 +7,16 @@
  * @author    Jeffery Way <jeffrey@jeffrey-way.com>
  * @author    Josh Campbell <jcampbell@ajillion.com>
  * @author    Alexander V. Butenko <a.butenka@gmail.com>
- * @copyright Copyright (c) 2010-2017
+ * @author    Ravi B. Patel <support@rbsoft.org>
+ * @copyright Copyright (c) 2010-2018
  * @license   http://opensource.org/licenses/gpl-3.0.html GNU Public License
- * @link      http://github.com/joshcam/PHP-MySQLi-Database-Class 
+ * @link      http://github.com/joshcam/PHP-MySQLi-Database-Class
  * @version   2.9.2
  */
+
+if(!defined("DB_SERVER") || !defined("DB_USER") || !defined("DB_PASS") || !defined("DB_NAME")) {
+    throw new Exception("Database connection details not defined.");
+}
 
 class MysqliDb
 {
@@ -227,7 +232,7 @@ class MysqliDb
      * @var int
      */
 
-    public $pageLimit = 20;
+    public $pageLimit = 50;
     /**
      * Variable that holds total pages count of last paginate() query
      *
@@ -243,7 +248,7 @@ class MysqliDb
      * @var string the name of a default (main) mysqli connection
      */
     public $defConnectionName = 'default';
-    
+
     public $autoReconnect = true;
     protected $autoReconnectCount = 0;
 
@@ -261,7 +266,7 @@ class MysqliDb
      * @param string $charset
      * @param string $socket
      */
-    public function __construct($host = null, $username = null, $password = null, $db = null, $port = null, $charset = 'utf8', $socket = null)
+    public function __construct($host = DB_SERVER, $username = DB_USER, $password = DB_PASS, $db = DB_NAME, $port = null, $charset = null, $socket = null)
     {
         $isSubQuery = false;
 
@@ -306,7 +311,7 @@ class MysqliDb
     {
         if(!isset($this->connectionsSettings[$connectionName]))
             throw new Exception('Connection profile not set');
-        
+
         $pro = $this->connectionsSettings[$connectionName];
         $params = array_values($pro);
         $charset = array_pop($params);
@@ -962,13 +967,18 @@ class MysqliDb
      * @param string $whereProp  The name of the database field.
      * @param mixed  $whereValue The value of the database field.
      * @param string $operator   Comparison operator. Default is =
+     * @param bool   $checkEmpty Ignore if $whereValue is null
      * @param string $cond       Condition of where statement (OR, AND)
      *
      * @return MysqliDb
      */
-    public function where($whereProp, $whereValue = 'DBNULL', $operator = '=', $cond = 'AND')
+    public function where($whereProp, $whereValue = 'DBNULL', $operator = '=', $checkEmpty = true, $cond = 'AND')
     {
-        // forkaround for an old operation api
+        if ($checkEmpty && empty($whereValue)) {
+            return $this;
+        }
+
+        // fork around for an old operation api
         if (is_array($whereValue) && ($key = key($whereValue)) != "0") {
             $operator = $key;
             $whereValue = $whereValue[$key];
@@ -1006,12 +1016,13 @@ class MysqliDb
      * @param string $whereProp  The name of the database field.
      * @param mixed  $whereValue The value of the database field.
      * @param string $operator   Comparison operator. Default is =
+     * @param bool   $checkEmpty Ignore if $whereValue is null
      *
      * @return MysqliDb
      */
-    public function orWhere($whereProp, $whereValue = 'DBNULL', $operator = '=')
+    public function orWhere($whereProp, $whereValue = 'DBNULL', $operator = '=', $checkEmpty = true)
     {
-        return $this->where($whereProp, $whereValue, $operator, 'OR');
+        return $this->where($whereProp, $whereValue, $operator, $checkEmpty, 'OR');
     }
 
     /**
@@ -1074,6 +1085,10 @@ class MysqliDb
      */
     public function join($joinTable, $joinCondition, $joinType = '')
     {
+        if (array_key_exists($joinTable, $this->_join)) {
+            return $this;
+        }
+
         $allowedTypes = array('LEFT', 'RIGHT', 'OUTER', 'INNER', 'LEFT OUTER', 'RIGHT OUTER', 'NATURAL');
         $joinType = strtoupper(trim($joinType));
 
@@ -1085,7 +1100,7 @@ class MysqliDb
             $joinTable = self::$prefix . $joinTable;
         }
 
-        $this->_join[] = Array($joinType, $joinTable, $joinCondition);
+        $this->_join[$joinTable] = Array($joinType, $joinTable, $joinCondition);
 
         return $this;
     }
@@ -2264,9 +2279,13 @@ class MysqliDb
      */
     public function startTransaction()
     {
+        if($this->_transaction_in_progress) {
+            return false;
+        }
         $this->mysqli()->autocommit(false);
         $this->_transaction_in_progress = true;
         register_shutdown_function(array($this, "_transaction_status_check"));
+        return true;
     }
 
     /**
@@ -2278,10 +2297,13 @@ class MysqliDb
      */
     public function commit()
     {
-        $result = $this->mysqli()->commit();
-        $this->_transaction_in_progress = false;
-        $this->mysqli()->autocommit(true);
-        return $result;
+        if($this->_transaction_in_progress) {
+            $result = $this->mysqli()->commit();
+            $this->_transaction_in_progress = false;
+            $this->mysqli()->autocommit(true);
+            return $result;
+        }
+        return true;
     }
 
     /**
@@ -2293,10 +2315,13 @@ class MysqliDb
      */
     public function rollback()
     {
-        $result = $this->mysqli()->rollback();
-        $this->_transaction_in_progress = false;
-        $this->mysqli()->autocommit(true);
-        return $result;
+        if($this->_transaction_in_progress) {
+            $result = $this->mysqli()->rollback();
+            $this->_transaction_in_progress = false;
+            $this->mysqli()->autocommit(true);
+            return $result;
+        }
+        return true;
     }
 
     /**
@@ -2457,8 +2482,8 @@ class MysqliDb
             else
                 $joinStr = $joinTable;
 
-            $this->_query .= " " . $joinType. " JOIN " . $joinStr . 
-                (false !== stripos($joinCondition, 'using') ? " " : " on ") 
+            $this->_query .= " " . $joinType. " JOIN " . $joinStr .
+                (false !== stripos($joinCondition, 'using') ? " " : " on ")
                 . $joinCondition;
 
             // Add join and query
